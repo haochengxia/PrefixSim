@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "cost_model.hpp"
+#include "flat_id_set.hpp"
 #include "trace.hpp"
 
 extern "C" {
@@ -158,7 +159,8 @@ class Simulator {
 
   // Scratch reused across requests so the hot loop does not allocate.
   std::vector<char> resident_;
-  std::unordered_set<obj_id_t> alpha_;
+  FlatIdSet alpha_;
+  FlatIdSet missing_;
   std::unordered_set<obj_id_t> alpha_resident_;
   std::vector<obj_id_t> victims_;
 };

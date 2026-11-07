@@ -153,7 +153,7 @@ const AlgoEntry kAlgos[] = {
 /// the arriving request's block set (Simulator::alpha_). extern "C" because it
 /// is stored in a C function pointer declared inside libCacheSim's extern "C".
 extern "C" bool alpha_is_pinned(void *ctx, obj_id_t id) {
-  return static_cast<const std::unordered_set<obj_id_t> *>(ctx)->count(id) != 0;
+  return static_cast<const FlatIdSet *>(ctx)->count(id) != 0;
 }
 
 }  // namespace
@@ -303,7 +303,7 @@ bool Simulator::serve(const Request &request, std::string &error) {
   // Every statistic this simulator reports is computed here, against the cache
   // exactly as the request found it. Nothing in phases 2 and 3 can change it.
   resident_.assign(n_pos, 0);
-  std::unordered_set<obj_id_t> missing;
+  missing_.clear();
 
   for (size_t i = 0; i < n_pos; ++i) {
     const int64_t cost = config_.cost_model.cost(static_cast<int64_t>(i));
@@ -324,7 +324,7 @@ bool Simulator::serve(const Request &request, std::string &error) {
       ++stats_.n_block_hits;
       stats_.saved_cost += cost;
     } else {
-      missing.insert(request.blocks[i]);
+      missing_.insert(request.blocks[i]);
     }
   }
 
@@ -333,7 +333,7 @@ bool Simulator::serve(const Request &request, std::string &error) {
   // ---------------- phase 2: allocate ----------------
   const int64_t occupied = cache_->get_occupied_byte(cache_);
   const int64_t free_slots = config_.cache_size_blocks - occupied;
-  const int64_t needed = static_cast<int64_t>(missing.size()) - free_slots;
+  const int64_t needed = static_cast<int64_t>(missing_.size()) - free_slots;
   if (needed > 0) {
     // Pins cover phase 2 only. Phase 3 must not evict at all (phase 2 reserved
     // exactly enough room, and n_unexpected_evictions asserts it), so leaving
@@ -398,12 +398,9 @@ bool Simulator::allocate(const Request &request, int64_t needed,
   int64_t unobserved_freed = 0;
 
   // Which of Alpha's blocks are resident right now. Only consulted on the
-  // no-victim-reported path, so building it costs nothing for the algorithms
-  // that do report their victims.
-  alpha_resident_.clear();
-  for (size_t i = 0; i < request.blocks.size(); ++i) {
-    if (resident_[i] != 0) alpha_resident_.insert(request.blocks[i]);
-  }
+  // no-victim-reported path, so it is built there, on first use, and costs
+  // nothing for the algorithms that do report their victims.
+  bool alpha_resident_built = false;
 
   // Termination: the request needs at most `cache_size` distinct blocks (larger
   // ones were skipped), so the cache always holds at least `needed` blocks the
@@ -477,6 +474,13 @@ bool Simulator::allocate(const Request &request, int64_t needed,
       unobserved_freed += occupied_before - occupied_now;
       if (unobserved_freed < needed) continue;
 
+      if (!alpha_resident_built) {
+        alpha_resident_.clear();
+        for (size_t i = 0; i < request.blocks.size(); ++i) {
+          if (resident_[i] != 0) alpha_resident_.insert(request.blocks[i]);
+        }
+        alpha_resident_built = true;
+      }
       int64_t missing = 0;
       for (const obj_id_t id : alpha_) {
         if (probe(id)) continue;
