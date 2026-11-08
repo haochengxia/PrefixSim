@@ -305,10 +305,18 @@ model and the hardware, not on the trace. Readers derive it from the block's
 | `position` | `linear:1,1`: the blocks prefilled from the root to rebuild this one |
 | `qwen3coder30b_blksz_16` | `linear:865,2`, measured on Qwen3-Coder-30B at 16-token blocks |
 
-A transformer's prefill FLOPs for one block are linear in `p`: the projections
-and MLP cost the same for every block, and attention grows with the context
-before it. So `linear` fits any model, with `B/A` the attention share; use a
-table for measured costs that are not linear. Costs are integers up to
+A block's cost is the compute to prefill it again: a hit saves it, and reading
+cached KV counts as free (I/O is not modeled). Both terms of `linear` are that
+compute. A transformer's prefill FLOPs for the block at position `p` are
+`A + B*p`: `A` is what every block costs wherever it sits (the projections and
+MLP over its tokens, and attention among them), and `B` is the attention to
+each block of context before it. For Qwen3-Coder-30B-A3B at 16-token blocks,
+`A` is about 87.5 GFLOPs and `B` about 0.20 GFLOPs, the ratio of
+`qwen3coder30b_blksz_16`. Attention to earlier context then equals the fixed
+part at `p = A/B`, about 435 blocks (7k tokens), and its share of a block's
+cost is `B*p / (A + B*p)`. `position` is not a FLOPs model but a count: the
+blocks prefilled from the root to rebuild this one. Use a table for measured
+costs that are not linear. Costs are integers up to
 2^31 - 1, the range of `cache_obj_t`'s cost: scale coefficients up instead of
 using fractions. The reader refuses a model that would exceed that within the
 file's longest request.
