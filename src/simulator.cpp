@@ -224,10 +224,72 @@ void Simulator::fill_request(const Request &request, size_t i) {
   req_buf_->valid = true;
 }
 
+Stats Stats::since(const Stats &earlier) const {
+  Stats d;
+  d.n_requests = n_requests - earlier.n_requests;
+  d.n_requests_skipped = n_requests_skipped - earlier.n_requests_skipped;
+  d.n_blocks = n_blocks - earlier.n_blocks;
+  d.n_block_hits = n_block_hits - earlier.n_block_hits;
+  d.total_cost = total_cost - earlier.total_cost;
+  d.saved_cost = saved_cost - earlier.saved_cost;
+  d.n_evictions = n_evictions - earlier.n_evictions;
+  d.n_self_evictions = n_self_evictions - earlier.n_self_evictions;
+  d.n_unexpected_evictions =
+      n_unexpected_evictions - earlier.n_unexpected_evictions;
+  d.n_unobserved_eviction_rounds =
+      n_unobserved_eviction_rounds - earlier.n_unobserved_eviction_rounds;
+  return d;
+}
+
+bool Simulator::reporting() const {
+  return config_.report_interval_s > 0.0 && config_.on_report != nullptr;
+}
+
+void Simulator::start_reports() {
+  run_start_ = std::chrono::steady_clock::now();
+  seen_request_ = false;
+  last_report_stats_ = stats_;
+}
+
+void Simulator::after_request(const Request &request) {
+  if (!reporting()) return;
+  if (!seen_request_) {
+    seen_request_ = true;
+    first_timestamp_ = request.timestamp;
+    last_trace_time_s_ = last_report_time_s_ = 0.0;
+  }
+  last_trace_time_s_ = request.timestamp - first_timestamp_;
+  if (last_trace_time_s_ - last_report_time_s_ >= config_.report_interval_s) {
+    report(last_trace_time_s_);
+  }
+}
+
+void Simulator::finish_reports() {
+  if (!reporting()) return;
+  const Stats rest = stats_.since(last_report_stats_);
+  if (rest.n_requests + rest.n_requests_skipped > 0) report(last_trace_time_s_);
+}
+
+void Simulator::report(double trace_time_s) {
+  IntervalReport r;
+  r.trace_time_s = trace_time_s;
+  r.elapsed_s = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - run_start_)
+                    .count();
+  r.total = stats_;
+  r.interval = stats_.since(last_report_stats_);
+  config_.on_report(r);
+  last_report_time_s_ = trace_time_s;
+  last_report_stats_ = stats_;
+}
+
 bool Simulator::run(const std::vector<Request> &requests, std::string &error) {
+  start_reports();
   for (const Request &request : requests) {
     if (!serve(request, error)) return false;
+    after_request(request);
   }
+  finish_reports();
   return true;
 }
 
@@ -247,10 +309,13 @@ bool Simulator::run(TraceReader &reader, std::string &error) {
             "with load_trace() and the cache size, which re-annotates it";
     return false;
   }
+  start_reports();
   Request request;
   while (reader.next(request)) {
     if (!serve(request, error)) return false;
+    after_request(request);
   }
+  finish_reports();
   return true;
 }
 

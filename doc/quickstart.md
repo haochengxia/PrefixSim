@@ -94,6 +94,9 @@ RESULT trace=qwen_traceA.lcp.zst algo=belady_compute ...
 
 Each algorithm prints a summary line and a `RESULT` line of `key=value`
 pairs for scripts; `--output <file>` also appends the `RESULT` lines to a file.
+While it runs, it prints a progress line to stderr every day of trace time, as
+cachesim does: the ratios so far and over the last interval.
+`--report-interval 6h` changes the interval, and `0` turns it off.
 
 **Cache size** is in blocks, with `k`, `m`, `g` meaning ×1024. For scale: a
 16-token block of Qwen3-Coder-30B's KV cache in bf16 is 1.5 MiB, so 1k blocks
@@ -148,6 +151,7 @@ The other diagnostics are described in
 | `--no-pin` | let eviction take blocks the arriving request already holds |
 | `--no-verify` | skip the check that every block is resident after each request |
 | `--dump-holes <dir>` | write each request's runs of missed blocks, per algorithm |
+| `--report-interval <t>` | progress lines on stderr every `t` of trace time: seconds, or `30m`, `6h`, `1d` (default); `0` for none |
 | `--block-id raw` | JSONL only: use the trace's hashes as block ids without positional encoding ([when](design.md#block-identity---block-id)) |
 
 ---

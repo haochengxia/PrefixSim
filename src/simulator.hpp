@@ -13,8 +13,10 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -65,6 +67,22 @@ struct Stats {
   double compute_saving_ratio() const {
     return total_cost > 0.0 ? saved_cost / total_cost : 0.0;
   }
+
+  /// What was counted after `earlier`, a copy of these statistics taken
+  /// before: every field is a running total.
+  Stats since(const Stats &earlier) const;
+};
+
+/// Statistics Simulator reports while it runs, every
+/// SimulatorConfig::report_interval_s of trace time.
+struct IntervalReport {
+  /// Trace time of the request that closed the interval, in seconds since the
+  /// first request's `timestamp`.
+  double trace_time_s = 0.0;
+  /// Wall-clock time since run() started.
+  double elapsed_s = 0.0;
+  Stats total;     ///< Every request so far.
+  Stats interval;  ///< The requests since the previous report.
 };
 
 struct SimulatorConfig {
@@ -98,6 +116,11 @@ struct SimulatorConfig {
   /// holes -- the contiguous runs of blocks it had to recompute. Empty
   /// disables it. See Simulator::dump_holes.
   std::string dump_holes_path;
+  /// When both are set, call on_report every report_interval_s seconds of trace
+  /// time (the requests' `timestamp`), as cachesim's report_interval does, and
+  /// once more at the end for the requests after the last report.
+  double report_interval_s = 0.0;
+  std::function<void(const IntervalReport &)> on_report;
 };
 
 /// Whether the phase-2 pin predicate (SimulatorConfig::pin_request_blocks) is
@@ -148,6 +171,15 @@ class Simulator {
   /// Write this request's holes, one line per request (see dump_holes()).
   void dump_holes(const Request &request);
 
+  /// Interval reports (SimulatorConfig::on_report). start_reports() runs at
+  /// the start of run(), after_request() after each request, and
+  /// finish_reports() at the end.
+  bool reporting() const;
+  void start_reports();
+  void after_request(const Request &request);
+  void finish_reports();
+  void report(double trace_time_s);
+
   cache_t *cache_ = nullptr;
   SimulatorConfig config_;
   Stats stats_;
@@ -161,6 +193,14 @@ class Simulator {
   std::unordered_set<obj_id_t> alpha_;
   std::unordered_set<obj_id_t> alpha_resident_;
   std::vector<obj_id_t> victims_;
+
+  // Interval reports.
+  std::chrono::steady_clock::time_point run_start_;
+  bool seen_request_ = false;
+  double first_timestamp_ = 0.0;
+  double last_trace_time_s_ = 0.0;    ///< Of the latest request.
+  double last_report_time_s_ = 0.0;  ///< Trace time of the latest report.
+  Stats last_report_stats_;
 };
 
 /// Create a cache by algorithm name (case-insensitive). Returns nullptr for
