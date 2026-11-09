@@ -432,6 +432,69 @@ bool request_blocks_share_one_stamp() {
 
 }  // namespace
 
+/// Interval reports come every report_interval_s of trace time, and once more at
+/// the end for the requests after the last one; their intervals add up to the
+/// run's totals.
+bool interval_reports_add_up() {
+  // Eight requests, one a second from t = 100 (trace time 0 to 7), the third
+  // larger than the cache. With a 2 s interval the reports close at 2, 4 and
+  // 6 s, and the last request gets one of its own at 7 s.
+  std::vector<prefixsim::Request> requests =
+      build({{1, 2}, {1, 2, 3}, {4, 5, 6, 7, 8}, {1, 2, 4}, {5}, {1, 2, 3},
+             {6, 7}, {1, 5}});
+  for (prefixsim::Request &r : requests) r.timestamp += 100.0;
+  const int64_t cache_size = 4;
+  prefixsim::annotate_next_access(requests, cache_size);
+
+  std::vector<prefixsim::IntervalReport> reports;
+  cache_t *cache = prefixsim::create_cache_by_name("lru", cache_size);
+  prefixsim::SimulatorConfig config;
+  config.cache_size_blocks = cache_size;
+  config.report_interval_s = 2.0;
+  config.on_report = [&reports](const prefixsim::IntervalReport &r) {
+    reports.push_back(r);
+  };
+  std::string error;
+  prefixsim::Stats stats;
+  bool run_ok = true;
+  {
+    prefixsim::Simulator sim(cache, config);
+    run_ok = sim.run(requests, error);
+    stats = sim.stats();
+  }
+  cache->cache_free(cache);
+  if (!run_ok) {
+    printf("  FAIL: %s\n", error.c_str());
+    return false;
+  }
+
+  const std::vector<double> expected_times = {2.0, 4.0, 6.0, 7.0};
+  bool ok = reports.size() == expected_times.size();
+  int64_t requests_seen = 0, blocks = 0, hits = 0;
+  for (size_t i = 0; ok && i < reports.size(); ++i) {
+    const prefixsim::IntervalReport &r = reports[i];
+    printf("  %.0f s: %lld requests, %lld/%lld hits in the interval\n",
+           r.trace_time_s, static_cast<long long>(r.interval.n_requests),
+           static_cast<long long>(r.interval.n_block_hits),
+           static_cast<long long>(r.interval.n_blocks));
+    requests_seen += r.interval.n_requests + r.interval.n_requests_skipped;
+    blocks += r.interval.n_blocks;
+    hits += r.interval.n_block_hits;
+    ok = r.trace_time_s == expected_times[i] &&
+         r.total.n_blocks == blocks && r.total.n_block_hits == hits;
+  }
+  ok = ok && requests_seen == 8 && stats.n_requests_skipped == 1 &&
+       blocks == stats.n_blocks && hits == stats.n_block_hits &&
+       reports.back().total.saved_cost == stats.saved_cost;
+  if (!ok) {
+    printf("  FAIL: expected reports at 2, 4, 6 and 7 s adding up to %lld/%lld "
+           "hits\n",
+           static_cast<long long>(stats.n_block_hits),
+           static_cast<long long>(stats.n_blocks));
+  }
+  return ok;
+}
+
 int main(void) {
   const std::vector<TestCase> cases = {
       // (a) Req2 reuses the whole prefix of Req1 and adds one new block. The
@@ -498,6 +561,10 @@ int main(void) {
   printf("one last-access time per request\n");
   ++n_run;
   if (!request_blocks_share_one_stamp()) ++n_failed;
+
+  printf("interval reports\n");
+  ++n_run;
+  if (!interval_reports_add_up()) ++n_failed;
 
   if (n_failed != 0) {
     printf("%d/%zu case(s) FAILED\n", n_failed, n_run);

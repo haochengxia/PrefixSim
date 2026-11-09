@@ -36,6 +36,7 @@ struct Options {
   bool verify = true;
   bool pin_request_blocks = true;
   bool replay_deepest_first = true;
+  double report_interval_s = 86400.0;  ///< cachesim's default; 0 disables
 };
 
 void print_usage(const char *program) {
@@ -107,6 +108,16 @@ void print_usage(const char *program) {
       "                          its recompute holes (runs of missed "
       "blocks).\n");
   printf(
+      "  --report-interval <t>   Every t of trace time, print the ratios so "
+      "far\n");
+  printf(
+      "                          and over the interval to stderr, as "
+      "cachesim\n");
+  printf(
+      "                          does. Seconds, or with s/m/h/d (default: "
+      "1d;\n");
+  printf("                          0 disables it).\n");
+  printf(
       "  --output <path>         Also append the RESULT lines to this file.\n");
   printf("  --list-algos            Print supported algorithms and exit.\n");
   printf("  --help                  Print this message.\n\n");
@@ -163,6 +174,32 @@ bool parse_size(const char *text, int64_t &out) {
   return true;
 }
 
+/// Seconds, or a number with an s, m, h or d suffix.
+bool parse_duration(const char *text, double &out) {
+  char *end = nullptr;
+  double value = strtod(text, &end);
+  if (end == text || value < 0) return false;
+  switch (*end) {
+    case '\0':
+    case 's':
+      break;
+    case 'm':
+      value *= 60;
+      break;
+    case 'h':
+      value *= 3600;
+      break;
+    case 'd':
+      value *= 86400;
+      break;
+    default:
+      return false;
+  }
+  if (*end != '\0' && end[1] != '\0') return false;
+  out = value;
+  return true;
+}
+
 std::vector<std::string> split_commas(const std::string &text) {
   std::vector<std::string> parts;
   size_t start = 0;
@@ -214,6 +251,11 @@ bool parse_args(int argc, char **argv, Options &opts, bool &should_exit) {
       opts.dump_holes_dir = value;
     } else if (strcmp(arg, "--output") == 0) {
       opts.output_path = value;
+    } else if (strcmp(arg, "--report-interval") == 0) {
+      if (!parse_duration(value, opts.report_interval_s)) {
+        fprintf(stderr, "error: bad --report-interval '%s'\n", value);
+        return false;
+      }
     } else if (strcmp(arg, "--algo") == 0) {
       opts.algorithms = split_commas(value);
     } else if (strcmp(arg, "--cache-size") == 0) {
@@ -446,6 +488,24 @@ int main(int argc, char **argv) {
     }
     config.replay_deepest_first = opts.replay_deepest_first;
     config.dump_holes_path = holes_path;
+    config.report_interval_s = opts.report_interval_s;
+    config.on_report = [&algorithm, n_requests_total](
+                           const prefixsim::IntervalReport &r) {
+      const int64_t seen = r.total.n_requests + r.total.n_requests_skipped;
+      char share[32] = "";
+      if (n_requests_total > 0) {
+        snprintf(share, sizeof(share), " (%.1f%%)",
+                 100.0 * static_cast<double>(seen) /
+                     static_cast<double>(n_requests_total));
+      }
+      fprintf(stderr,
+              "%s %.2f hour: %lld requests%s, hit ratio %.4f (interval %.4f), "
+              "compute saving %.4f (interval %.4f), %.0f s\n",
+              algorithm.c_str(), r.trace_time_s / 3600,
+              static_cast<long long>(seen), share, r.total.block_hit_ratio(),
+              r.interval.block_hit_ratio(), r.total.compute_saving_ratio(),
+              r.interval.compute_saving_ratio(), r.elapsed_s);
+    };
 
     // A stream is consumed by one algorithm; the next one reopens the file.
     if (streaming && reader == nullptr) {
