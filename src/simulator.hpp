@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -66,6 +67,33 @@ struct Stats {
   double compute_saving_ratio() const {
     return total_cost > 0.0 ? saved_cost / total_cost : 0.0;
   }
+
+  /// What the run did between `earlier`, a snapshot of the same run, and now.
+  Stats since(const Stats &earlier) const {
+    Stats d;
+    d.n_requests = n_requests - earlier.n_requests;
+    d.n_requests_skipped = n_requests_skipped - earlier.n_requests_skipped;
+    d.n_blocks = n_blocks - earlier.n_blocks;
+    d.n_block_hits = n_block_hits - earlier.n_block_hits;
+    d.total_cost = total_cost - earlier.total_cost;
+    d.saved_cost = saved_cost - earlier.saved_cost;
+    d.n_evictions = n_evictions - earlier.n_evictions;
+    d.n_self_evictions = n_self_evictions - earlier.n_self_evictions;
+    d.n_unexpected_evictions =
+        n_unexpected_evictions - earlier.n_unexpected_evictions;
+    d.n_unobserved_eviction_rounds =
+        n_unobserved_eviction_rounds - earlier.n_unobserved_eviction_rounds;
+    return d;
+  }
+};
+
+/// One interval report; see SimulatorConfig::report_interval_sec.
+struct IntervalReport {
+  /// Trace time of the request that closed the interval, in seconds since the
+  /// trace's first request.
+  double time_sec = 0.0;
+  Stats total;     ///< The run so far.
+  Stats interval;  ///< Since the previous report.
 };
 
 struct SimulatorConfig {
@@ -99,6 +127,14 @@ struct SimulatorConfig {
   /// holes -- the contiguous runs of blocks it had to recompute. Empty
   /// disables it. See Simulator::dump_holes.
   std::string dump_holes_path;
+  /// Trace time, in seconds, between interval reports to `on_report`; 0
+  /// disables them. The rule is cachesim's --report-interval: time is a
+  /// request's `timestamp` less the trace's first, and a served request that
+  /// lands at least this long after the previous report closes an interval
+  /// that includes it. What follows the last such request is reported when the
+  /// trace ends, which cachesim does not do. Skipped requests close nothing.
+  int64_t report_interval_sec = 0;
+  std::function<void(const IntervalReport &)> on_report;
 };
 
 /// Whether the phase-2 pin predicate (SimulatorConfig::pin_request_blocks) is
@@ -149,9 +185,22 @@ class Simulator {
   /// Write this request's holes, one line per request (see dump_holes()).
   void dump_holes(const Request &request);
 
+  /// Close an interval at trace time `time_sec` (see report_interval_sec).
+  void report_interval(double time_sec);
+
+  /// Report what the last interval left unreported, at the end of a run.
+  void report_rest();
+
   cache_t *cache_ = nullptr;
   SimulatorConfig config_;
   Stats stats_;
+
+  // Interval reports, in seconds since the first request's timestamp.
+  bool clock_started_ = false;
+  double first_timestamp_ = 0.0;
+  double last_served_time_ = 0.0;
+  double last_report_time_ = 0.0;
+  Stats last_report_stats_;
 
   request_t *req_buf_ = nullptr;
   prefetcher_t *recorder_ = nullptr;

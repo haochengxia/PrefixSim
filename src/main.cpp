@@ -29,6 +29,7 @@ struct Options {
   std::string dump_holes_dir;
   std::vector<std::string> algorithms{"lru"};
   int64_t cache_size = 0;
+  int64_t report_interval = 0;  ///< seconds of trace time; 0 = off
   prefixsim::TraceFormat format = prefixsim::TraceFormat::kQwenJsonl;
   bool format_given = false;        ///< else guessed from the file name
   prefixsim::CostModel cost_model;  // uniform
@@ -106,6 +107,10 @@ void print_usage(const char *program) {
   printf(
       "                          its recompute holes (runs of missed "
       "blocks).\n");
+  printf(
+      "  --report-interval <s>   Every <s> seconds of trace time, print the\n"
+      "                          ratios so far and over the last interval,\n"
+      "                          as cachesim does (default: 0, off).\n");
   printf(
       "  --output <path>         Also append the RESULT lines to this file.\n");
   printf("  --list-algos            Print supported algorithms and exit.\n");
@@ -214,6 +219,15 @@ bool parse_args(int argc, char **argv, Options &opts, bool &should_exit) {
       opts.dump_holes_dir = value;
     } else if (strcmp(arg, "--output") == 0) {
       opts.output_path = value;
+    } else if (strcmp(arg, "--report-interval") == 0) {
+      char *end = nullptr;
+      errno = 0;
+      const long long seconds = strtoll(value, &end, 10);
+      if (end == value || *end != '\0' || seconds < 0 || errno != 0) {
+        fprintf(stderr, "error: bad --report-interval '%s' (seconds)\n", value);
+        return false;
+      }
+      opts.report_interval = static_cast<int64_t>(seconds);
     } else if (strcmp(arg, "--algo") == 0) {
       opts.algorithms = split_commas(value);
     } else if (strcmp(arg, "--cache-size") == 0) {
@@ -286,6 +300,28 @@ std::string holes_path_for(const Options &opts, const std::string &algorithm) {
   if (dot != std::string::npos) base = base.substr(0, dot);
   return opts.dump_holes_dir + "/holes_" + base + "_cache" +
          std::to_string(opts.cache_size) + "_" + algorithm + ".txt";
+}
+
+std::string base_name(const std::string &path) {
+  const size_t slash = path.find_last_of('/');
+  return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+/// One interval report, worded like cachesim's "interval miss ratio" line so
+/// that scripts reading one read the other with a changed regex.
+void print_interval(const std::string &trace, const std::string &algorithm,
+                    const prefixsim::IntervalReport &report) {
+  printf(
+      "%s %s %.2f hour: %lld requests, block hit ratio %.4f, interval block "
+      "hit ratio %.4f, compute saving ratio %.4f, interval compute saving "
+      "ratio %.4f\n",
+      trace.c_str(), algorithm.c_str(), report.time_sec / 3600,
+      static_cast<long long>(report.total.n_requests),
+      report.total.block_hit_ratio(), report.interval.block_hit_ratio(),
+      report.total.compute_saving_ratio(),
+      report.interval.compute_saving_ratio());
+  // Shown as the run goes, even when stdout is a pipe or a file.
+  fflush(stdout);
 }
 
 /// Fail before the trace is read rather than after. Loading a multi-GB trace
@@ -446,6 +482,13 @@ int main(int argc, char **argv) {
     }
     config.replay_deepest_first = opts.replay_deepest_first;
     config.dump_holes_path = holes_path;
+    if (opts.report_interval > 0) {
+      config.report_interval_sec = opts.report_interval;
+      config.on_report = [trace = base_name(opts.trace_path),
+                          algorithm](const prefixsim::IntervalReport &report) {
+        print_interval(trace, algorithm, report);
+      };
+    }
 
     // A stream is consumed by one algorithm; the next one reopens the file.
     if (streaming && reader == nullptr) {

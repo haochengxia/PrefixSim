@@ -148,6 +148,7 @@ The other diagnostics are described in
 | `--no-pin` | let eviction take blocks the arriving request already holds |
 | `--no-verify` | skip the check that every block is resident after each request |
 | `--dump-holes <dir>` | write each request's runs of missed blocks, per algorithm |
+| `--report-interval <s>` | every `s` seconds of trace time, print both ratios so far and over the last interval, like cachesim's option ([how](design.md#interval-reports---report-interval)) |
 | `--block-id raw` | JSONL only: use the trace's hashes as block ids without positional encoding ([when](design.md#block-identity---block-id)) |
 
 ---

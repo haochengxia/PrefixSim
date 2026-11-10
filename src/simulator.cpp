@@ -228,6 +228,7 @@ bool Simulator::run(const std::vector<Request> &requests, std::string &error) {
   for (const Request &request : requests) {
     if (!serve(request, error)) return false;
   }
+  report_rest();
   return true;
 }
 
@@ -251,11 +252,18 @@ bool Simulator::run(TraceReader &reader, std::string &error) {
   while (reader.next(request)) {
     if (!serve(request, error)) return false;
   }
+  report_rest();
   return true;
 }
 
 bool Simulator::serve(const Request &request, std::string &error) {
   const size_t n_pos = request.blocks.size();
+
+  // Trace time starts at the first request, served or not, as in cachesim.
+  if (!clock_started_) {
+    first_timestamp_ = request.timestamp;
+    clock_started_ = true;
+  }
 
   alpha_.clear();
   for (const obj_id_t id : request.blocks) alpha_.insert(id);
@@ -373,6 +381,14 @@ bool Simulator::serve(const Request &request, std::string &error) {
             "what you are doing.";
         return false;
       }
+    }
+  }
+
+  if (config_.report_interval_sec > 0) {
+    last_served_time_ = request.timestamp - first_timestamp_;
+    if (last_served_time_ - last_report_time_ >=
+        static_cast<double>(config_.report_interval_sec)) {
+      report_interval(last_served_time_);
     }
   }
   return true;
@@ -543,6 +559,23 @@ void Simulator::dump_holes(const Request &request) {
             static_cast<long long>(start), static_cast<long long>(n - start));
   }
   fprintf(holes_file_, "\n");
+}
+
+void Simulator::report_interval(double time_sec) {
+  IntervalReport report;
+  report.time_sec = time_sec;
+  report.total = stats_;
+  report.interval = stats_.since(last_report_stats_);
+  last_report_time_ = time_sec;
+  last_report_stats_ = stats_;
+  if (config_.on_report) config_.on_report(report);
+}
+
+void Simulator::report_rest() {
+  if (config_.report_interval_sec > 0 &&
+      stats_.n_requests > last_report_stats_.n_requests) {
+    report_interval(last_served_time_);
+  }
 }
 
 void Simulator::access(const Request &request) {

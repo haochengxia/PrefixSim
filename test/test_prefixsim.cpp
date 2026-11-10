@@ -1,8 +1,9 @@
 // Sanity checks for the prefixsim three-phase serve loop, on LRU; a check that
 // lhd_compute reduces to lhd under the uniform cost model; that a skipped
 // request does not mislead the oracles; that every algorithm's read-only lookup
-// really is read-only; and that the cost / recency policies stamp a request's
-// blocks with one last-access time.
+// really is read-only; that the cost / recency policies stamp a request's
+// blocks with one last-access time; and that interval reports add up to the
+// final result.
 //
 // Each case is a hand-traceable trace where the correct number of block hits
 // can be derived on paper. Requests are built directly from block ids rather
@@ -430,6 +431,124 @@ bool request_blocks_share_one_stamp() {
   return ok;
 }
 
+/// Run LRU over `requests`, collecting interval reports every `interval_sec`.
+prefixsim::Stats run_with_reports(
+    const std::vector<prefixsim::Request> &requests, int64_t cache_size,
+    int64_t interval_sec, std::vector<prefixsim::IntervalReport> &reports) {
+  cache_t *cache = prefixsim::create_cache_by_name("lru", cache_size);
+  prefixsim::SimulatorConfig config;
+  config.cache_size_blocks = cache_size;
+  std::string error;
+  prefixsim::CostModel::parse("position", config.cost_model, error);
+  config.report_interval_sec = interval_sec;
+  config.on_report = [&reports](const prefixsim::IntervalReport &report) {
+    reports.push_back(report);
+  };
+  prefixsim::Stats stats;
+  {
+    prefixsim::Simulator sim(cache, config);
+    if (!sim.run(requests, error)) printf("  FAIL: %s\n", error.c_str());
+    stats = sim.stats();
+  }
+  cache->cache_free(cache);
+  return stats;
+}
+
+/// Interval reports follow cachesim's rule, add up to the final result, and
+/// change nothing about it.
+///
+/// Request i arrives at second i, and request 5 is larger than the cache, so
+/// it is skipped. Every 3 s: request 3 closes [0..3], request 6 closes [4..6]
+/// (with the skip, which closes nothing itself), request 9 closes [7..9], and
+/// request 10 is left over for the report at the end of the trace.
+bool interval_reports_add_up() {
+  const std::vector<std::vector<obj_id_t>> raw = {
+      {1, 2, 3},  {1, 2, 4}, {5, 6},
+      {1, 2, 3},  {7, 8, 9}, {10, 11, 12, 13, 14},
+      {1, 2, 3},  {7, 8},    {1, 2, 4},
+      {5, 6, 15}, {1, 2}};
+  const std::vector<prefixsim::Request> requests = build(raw);
+  const int64_t cache_size = 4;
+  const std::vector<double> expected_time = {3, 6, 9, 10};
+  const std::vector<int64_t> expected_requests = {4, 2, 3, 1};
+  const std::vector<int64_t> expected_skipped = {0, 1, 0, 0};
+
+  bool ok = true;
+  std::vector<prefixsim::IntervalReport> reports;
+  const prefixsim::Stats stats =
+      run_with_reports(requests, cache_size, 3, reports);
+  if (reports.size() != expected_time.size()) {
+    printf("  FAIL: %zu reports, expected %zu\n", reports.size(),
+           expected_time.size());
+    return false;
+  }
+
+  prefixsim::Stats sum;
+  for (size_t i = 0; i < reports.size(); ++i) {
+    const prefixsim::IntervalReport &r = reports[i];
+    printf(
+        "  %.0f s: %lld requests (%lld skipped), interval hit ratio %.4f, "
+        "compute saving %.4f\n",
+        r.time_sec, static_cast<long long>(r.interval.n_requests),
+        static_cast<long long>(r.interval.n_requests_skipped),
+        r.interval.block_hit_ratio(), r.interval.compute_saving_ratio());
+    if (r.time_sec != expected_time[i] ||
+        r.interval.n_requests != expected_requests[i] ||
+        r.interval.n_requests_skipped != expected_skipped[i]) {
+      printf(
+          "  FAIL: report %zu at %.0f s with %lld requests (%lld skipped), "
+          "expected %.0f s with %lld (%lld)\n",
+          i, r.time_sec, static_cast<long long>(r.interval.n_requests),
+          static_cast<long long>(r.interval.n_requests_skipped),
+          expected_time[i], static_cast<long long>(expected_requests[i]),
+          static_cast<long long>(expected_skipped[i]));
+      ok = false;
+    }
+    sum.n_requests += r.interval.n_requests;
+    sum.n_requests_skipped += r.interval.n_requests_skipped;
+    sum.n_blocks += r.interval.n_blocks;
+    sum.n_block_hits += r.interval.n_block_hits;
+    sum.total_cost += r.interval.total_cost;
+    sum.saved_cost += r.interval.saved_cost;
+    sum.n_evictions += r.interval.n_evictions;
+  }
+
+  // Costs are small integers, so the sums are exact.
+  auto is_final = [&stats](const prefixsim::Stats &s) {
+    return s.n_requests == stats.n_requests &&
+           s.n_requests_skipped == stats.n_requests_skipped &&
+           s.n_blocks == stats.n_blocks &&
+           s.n_block_hits == stats.n_block_hits &&
+           s.total_cost == stats.total_cost &&
+           s.saved_cost == stats.saved_cost &&
+           s.n_evictions == stats.n_evictions;
+  };
+  if (!is_final(sum)) {
+    printf("  FAIL: the intervals do not add up to the final result\n");
+    ok = false;
+  }
+  if (!is_final(reports.back().total)) {
+    printf("  FAIL: the last report's totals are not the final result\n");
+    ok = false;
+  }
+
+  // Off by default, and the result is the same either way.
+  std::vector<prefixsim::IntervalReport> none;
+  const prefixsim::Stats plain =
+      run_with_reports(requests, cache_size, 0, none);
+  if (!none.empty()) {
+    printf("  FAIL: %zu reports with reporting off\n", none.size());
+    ok = false;
+  }
+  if (plain.n_block_hits != stats.n_block_hits ||
+      plain.saved_cost != stats.saved_cost ||
+      plain.n_evictions != stats.n_evictions) {
+    printf("  FAIL: reporting changed the result\n");
+    ok = false;
+  }
+  return ok;
+}
+
 }  // namespace
 
 int main(void) {
@@ -498,6 +617,10 @@ int main(void) {
   printf("one last-access time per request\n");
   ++n_run;
   if (!request_blocks_share_one_stamp()) ++n_failed;
+
+  printf("interval reports\n");
+  ++n_run;
+  if (!interval_reports_add_up()) ++n_failed;
 
   if (n_failed != 0) {
     printf("%d/%zu case(s) FAILED\n", n_failed, n_run);

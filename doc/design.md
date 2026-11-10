@@ -794,6 +794,51 @@ partial-node policy occasionally punches a gap mid-prefix instead. That is the
 contiguity difference that the removed `prefix_hit_ratio` metric used to
 summarise in one number, now visible in full rather than averaged away.
 
+## Interval reports (`--report-interval`)
+
+The `RESULT` line averages over the whole trace. To see how the ratios move
+through it, `--report-interval <s>` prints a line every `s` seconds of trace
+time, as cachesim's option of the same name does:
+
+```bash
+prefixsim --trace freeinference.lcp.zst --cache-size 64k --algo lru \
+          --cost-model qwen3coder30b_blksz_16 --report-interval 86400
+```
+```
+freeinference.lcp.zst lru 24.00 hour: 15761 requests, block hit ratio 0.9439, interval block hit ratio 0.9439, compute saving ratio 0.9391, interval compute saving ratio 0.9391
+freeinference.lcp.zst lru 48.00 hour: 33679 requests, block hit ratio 0.9434, interval block hit ratio 0.9428, compute saving ratio 0.9390, interval compute saving ratio 0.9389
+freeinference.lcp.zst lru 72.00 hour: 73808 requests, block hit ratio 0.9428, interval block hit ratio 0.9417, compute saving ratio 0.9385, interval compute saving ratio 0.9376
+freeinference.lcp.zst lru 96.00 hour: 179312 requests, block hit ratio 0.9293, interval block hit ratio 0.8981, compute saving ratio 0.9349, interval compute saving ratio 0.9260
+freeinference.lcp.zst lru 120.00 hour: 244833 requests, block hit ratio 0.9252, interval block hit ratio 0.9127, compute saving ratio 0.9297, interval compute saving ratio 0.9141
+freeinference.lcp.zst lru 144.00 hour: 281994 requests, block hit ratio 0.9239, interval block hit ratio 0.9201, compute saving ratio 0.9307, interval compute saving ratio 0.9335
+freeinference.lcp.zst lru 168.00 hour: 327548 requests, block hit ratio 0.9175, interval block hit ratio 0.8967, compute saving ratio 0.9259, interval compute saving ratio 0.9118
+lru                      block hit ratio 0.9175   compute saving 0.9259
+RESULT trace=freeinference.lcp.zst algo=lru cache_size=65536 ...
+```
+
+Each line gives the trace time in hours, the requests served so far, and both
+ratios over the run so far and over the interval just closed. The wording
+follows cachesim's `interval miss ratio` lines, so a script that parses one
+parses the other with a changed regex. The lines go to stdout as they happen,
+ahead of each algorithm's summary and `RESULT` lines.
+
+An interval is cut as cachesim cuts it:
+
+- **Trace time** is a request's `timestamp` less the first request's: the
+  completion time in fi-new and chutes, the arrival time in the Qwen traces.
+- **An interval closes** at the first served request at least `s` seconds after
+  the previous report, and includes that request. The times on the lines are
+  those requests' times, so they drift past multiples of `s`, and a quiet
+  stretch of the trace makes one long interval rather than several empty ones.
+- **The end of the trace** closes one more interval if anything was served
+  after the last report, so the intervals always add up to the `RESULT` line.
+  cachesim stops at its last full interval.
+- **Skipped requests** (larger than the cache) are left out of every count, as
+  everywhere else, and do not close an interval.
+
+The reports are read off the phase-1 statistics and change nothing else: the
+`RESULT` line is the same with or without the option. It is off by default.
+
 ## Adding an input format
 
 Implement `TraceReader` in `src/trace.cpp` and add one
